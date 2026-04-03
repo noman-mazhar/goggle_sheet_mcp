@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 import google.auth.transport.requests
 import urllib.request
 import urllib.error
+import urllib.parse
 import json
 import os
 
@@ -24,7 +25,7 @@ app = FastAPI()
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
 SHEET_ID   = "1GiVtLEjCH1WLQa4B79DHUyIQN7TnY2PcufJEhsJEJ20"
-SHEET_NAME = "Globelink Data"
+SHEET_NAME = "Globelink Invoice Data"
 SCOPES     = ["https://www.googleapis.com/auth/spreadsheets"]
 
 # Load service account credentials from environment variable.
@@ -50,7 +51,7 @@ def get_token():
 
 
 def sheets_request(method, path, body=None):
-    url   = f"https://sheets.googleapis.com/v4/spreadsheets/{SHEET_ID}{path}"
+    url   = f"https://sheets.googleapis.com/v4/spreadsheets/{SHEET_ID}{urllib.parse.quote(path, safe='/?=&:!')}"
     data  = json.dumps(body).encode() if body else None
     req   = urllib.request.Request(
         url,
