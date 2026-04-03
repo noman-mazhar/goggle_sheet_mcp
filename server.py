@@ -8,15 +8,19 @@ Writes one row to the configured Google Sheet.
 Deploy on Render (free tier) as a web service.
 """
 
-from flask import Flask, request, jsonify
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from google.oauth2.service_account import Credentials
+from dotenv import load_dotenv
 import google.auth.transport.requests
 import urllib.request
 import urllib.error
 import json
 import os
 
-app = Flask(__name__)
+load_dotenv()
+
+app = FastAPI()
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
 SHEET_ID   = "1GiVtLEjCH1WLQa4B79DHUyIQN7TnY2PcufJEhsJEJ20"
@@ -79,24 +83,30 @@ def append_row(row: list):
 
 # ── MCP PROTOCOL ─────────────────────────────────────────────────────────────
 
-@app.route("/", methods=["GET"])
+@app.get("/")
 def health():
-    return jsonify({"status": "ok", "service": "globelink-mcp"})
+    return {"status": "ok", "service": "globelink-mcp"}
 
 
-@app.route("/mcp", methods=["POST"])
-def mcp():
+@app.post("/mcp")
+async def mcp(request: Request):
     """
     Minimal MCP-compatible SSE/JSON endpoint.
     Handles:  tools/list  and  tools/call
     """
-    body   = request.get_json(force=True, silent=True) or {}
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(
+            {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error: invalid JSON"}},
+            status_code=400
+        )
     method = body.get("method", "")
     req_id = body.get("id", 1)
 
     # ── tools/list ────────────────────────────────────────────────────────────
     if method == "tools/list":
-        return jsonify({
+        return JSONResponse({
             "jsonrpc": "2.0",
             "id": req_id,
             "result": {
@@ -141,7 +151,7 @@ def mcp():
         args      = body.get("params", {}).get("arguments", {})
 
         if tool_name != "append_to_globelink_sheet":
-            return jsonify({
+            return JSONResponse({
                 "jsonrpc": "2.0", "id": req_id,
                 "error": {"code": -32601, "message": f"Unknown tool: {tool_name}"}
             })
@@ -167,29 +177,30 @@ def mcp():
                 args.get("extracted_at",   datetime.now().strftime("%Y-%m-%d %H:%M")),
             ]
             append_row(row)
-            return jsonify({
+            return JSONResponse({
                 "jsonrpc": "2.0",
                 "id": req_id,
                 "result": {
                     "content": [{
                         "type": "text",
-                        "text": f"✓ Row appended to Google Sheet for file: {args.get('file_name','')}"
+                        "text": f"Row appended to Google Sheet for file: {args.get('file_name','')}"
                     }]
                 }
             })
         except Exception as e:
-            return jsonify({
+            return JSONResponse({
                 "jsonrpc": "2.0", "id": req_id,
                 "error": {"code": -32000, "message": str(e)}
-            }), 500
+            }, status_code=500)
 
     # ── unknown method ────────────────────────────────────────────────────────
-    return jsonify({
+    return JSONResponse({
         "jsonrpc": "2.0", "id": req_id,
         "error": {"code": -32601, "message": f"Method not found: {method}"}
-    }), 404
+    }, status_code=404)
 
 
 if __name__ == "__main__":
+    import uvicorn
     port = int(os.environ.get("PORT", 8000))
-    app.run(host="0.0.0.0", port=port)
+    uvicorn.run("server:app", host="0.0.0.0", port=port, reload=False)

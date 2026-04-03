@@ -2,8 +2,10 @@ services:
   - type: web
     name: globelink-mcp
     runtime: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: python server.py
+    buildCommand: pip install -r requirement.txt
+    startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: PORT
         value: 8000
+      - key: GOOGLE_SERVICE_ACCOUNT_JSON
+        sync: false
