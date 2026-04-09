@@ -35,13 +35,24 @@ if not _sa_json:
     raise RuntimeError("GOOGLE_SERVICE_ACCOUNT_JSON environment variable is not set")
 SERVICE_ACCOUNT = json.loads(_sa_json)
 
-HEADERS = [
+# Fixed columns before PO numbers. PO#1, PO#2, ... are appended dynamically,
+# followed by "Extracted At" as the last column.
+BASE_HEADERS = [
     "File", "Entry Number", "BL Number", "Vessel", "Entry Date",
     "Origin", "Destination", "Pieces", "Weight",
     "Invoice Value", "Additional Duty %", "Duty Per Item %",
-    "MPF & HMF %", "Freight", "Globelink Bill", "Extracted At"
+    "MPF & HMF %", "Freight", "Globelink Bill"
 ]
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+def col_letter(n: int) -> str:
+    """Convert 1-based column index to spreadsheet letter(s): 1→A, 26→Z, 27→AA."""
+    result = ""
+    while n > 0:
+        n, r = divmod(n - 1, 26)
+        result = chr(65 + r) + result
+    return result
 
 
 def get_token():
@@ -66,18 +77,27 @@ def sheets_request(method, path, body=None):
         return json.loads(r.read())
 
 
-def ensure_headers():
-    """Write header row if sheet is empty."""
-    result = sheets_request("GET", f"/values/{SHEET_NAME}!A1:P1")
-    if not result.get("values"):
-        sheets_request("PUT", f"/values/{SHEET_NAME}!A1:P1?valueInputOption=RAW", {
-            "values": [HEADERS]
+def ensure_headers(po_count: int):
+    """
+    Write or extend the header row to accommodate po_count PO# columns.
+    Headers: BASE_HEADERS + [PO#1, PO#2, ...] + [Extracted At]
+    If the current header row is shorter than needed, it is rewritten.
+    """
+    headers  = BASE_HEADERS + [f"PO#{i + 1}" for i in range(po_count)] + ["Extracted At"]
+    last_col = col_letter(len(headers))
+    result   = sheets_request("GET", f"/values/{SHEET_NAME}!A1:{last_col}1")
+    existing = (result.get("values") or [[]])[0]
+    if len(existing) < len(headers):
+        sheets_request("PUT", f"/values/{SHEET_NAME}!A1:{last_col}1?valueInputOption=RAW", {
+            "values": [headers]
         })
 
 
-def append_row(row: list):
-    ensure_headers()
-    sheets_request("POST", f"/values/{SHEET_NAME}!A:P:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS", {
+def append_row(base_values: list, po_numbers: list, extracted_at: str):
+    ensure_headers(len(po_numbers))
+    row      = base_values + po_numbers + [extracted_at]
+    last_col = col_letter(len(row))
+    sheets_request("POST", f"/values/{SHEET_NAME}!A:{last_col}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS", {
         "values": [row]
     })
 
@@ -116,13 +136,14 @@ async def mcp(request: Request):
                     "description": (
                         "Appends one row of extracted Globelink customs data "
                         "to the shared Google Sheet. Call this after extracting "
-                        "all 6 values from a Globelink PDF."
+                        "all values from a Globelink PDF. Multiple PO numbers are "
+                        "each written to their own cell (PO#1, PO#2, ...) in the same row."
                     ),
                     "inputSchema": {
                         "type": "object",
                         "required": ["file_name", "invoice_value", "additional_duty",
                                      "duty_per_item", "mpf_hmf", "freight",
-                                     "globelink_bill"],
+                                     "globelink_bill", "po_number"],
                         "properties": {
                             "file_name":        {"type": "string",  "description": "PDF filename"},
                             "entry_number":     {"type": "string",  "description": "Entry # e.g. L93-00042335"},
@@ -139,6 +160,8 @@ async def mcp(request: Request):
                             "mpf_hmf":          {"type": "number",  "description": "MPF + HMF % combined"},
                             "freight":          {"type": "number",  "description": "Total freight excl. customs duty"},
                             "globelink_bill":   {"type": "number",  "description": "Balance Due / Globelink Bill"},
+                            "po_number":        {"type": "array", "items": {"type": "string"},
+                                                 "description": "One or more PO numbers — each gets its own cell (PO#1, PO#2, ...)"},
                             "extracted_at":     {"type": "string",  "description": "Timestamp of extraction"}
                         }
                     }
@@ -159,7 +182,7 @@ async def mcp(request: Request):
 
         try:
             from datetime import datetime
-            row = [
+            base_values = [
                 args.get("file_name",      ""),
                 args.get("entry_number",   ""),
                 args.get("bl_number",      ""),
@@ -175,9 +198,10 @@ async def mcp(request: Request):
                 args.get("mpf_hmf",        ""),
                 args.get("freight",        ""),
                 args.get("globelink_bill", ""),
-                args.get("extracted_at",   datetime.now().strftime("%Y-%m-%d %H:%M")),
             ]
-            append_row(row)
+            po_numbers   = args.get("po_number", [])
+            extracted_at = args.get("extracted_at", datetime.now().strftime("%Y-%m-%d %H:%M"))
+            append_row(base_values, po_numbers, extracted_at)
             return JSONResponse({
                 "jsonrpc": "2.0",
                 "id": req_id,
